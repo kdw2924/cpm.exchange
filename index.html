@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CPM2 주차장 마켓</title>
+<link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<style type="text/tailwindcss">
+@layer components {
+  body { font-family: 'Noto Sans KR', sans-serif; background: #e8e6e1; color: #1c2530; }
+  .disp { font-family: 'Black Han Sans', 'Noto Sans KR', sans-serif; }
+  .btn-p { @apply bg-[#1747c9] text-white font-bold rounded-xl px-4 py-2 transition hover:bg-[#1239a3] active:scale-95; }
+  .btn-s { @apply bg-white text-[#1c2530] border border-[#1c2530]/20 rounded-xl px-3 py-2 transition hover:bg-[#f3f1ec] active:scale-95; }
+  .inp { @apply w-full bg-white border border-[#1c2530]/20 rounded-xl px-4 py-3 outline-none focus:border-[#1747c9] focus:ring-2 focus:ring-[#1747c9]/20; }
+  .card { @apply bg-[#fbfaf7] rounded-2xl overflow-hidden border border-[#1c2530]/10 relative; }
+  .card::before { content:''; position:absolute; z-index:2; left:0; right:0; top:0; height:6px;
+    background: repeating-linear-gradient(90deg,#f5c518 0 22px,transparent 22px 34px); }
+}
+</style>
+</head>
+<body class="min-h-screen">
+
+<header class="sticky top-0 z-30 bg-[#fbfaf7]/90 backdrop-blur border-b border-[#1c2530]/10 pt-[env(safe-area-inset-top)]">
+  <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
+    <a href="#" class="flex items-center gap-2">
+      <span class="grid place-items-center w-8 h-8 rounded-lg bg-[#1747c9] text-white disp text-lg">P</span>
+      <span class="disp text-xl">CPM2 마켓</span>
+    </a>
+    <nav id="nav" class="flex items-center gap-2 text-sm"></nav>
+  </div>
+</header>
+
+<main class="max-w-6xl mx-auto px-4 py-5">
+  <div class="rounded-xl bg-[#f5c518]/25 border border-[#f5c518] text-sm p-3 mb-4">
+    개인 간 현금 거래예요. 선입금 요구, 채팅 밖 연락 유도는 사기일 수 있으니 조심하세요.
+  </div>
+  <input id="q" class="inp" placeholder="차량 이름으로 검색">
+  <div id="grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-4"></div>
+</main>
+
+<!-- 팝업(로그인/판매/채팅 공용) -->
+<div id="modal" class="hidden fixed inset-0 z-40 bg-[#1c2530]/60 flex items-end sm:items-center justify-center sm:p-4">
+  <div id="sheet" class="w-full sm:max-w-lg bg-[#fbfaf7] rounded-t-3xl sm:rounded-3xl max-h-[92vh] overflow-y-auto"></div>
+</div>
+<div id="toast" class="hidden fixed z-50 left-1/2 -translate-x-1/2 bottom-6 bg-[#1c2530] text-white text-sm px-4 py-3 rounded-xl max-w-[90vw]"></div>
+
+<script>
+/* ============================================================
+   ① 여기에 Supabase 값을 넣으세요
+   Supabase 대시보드 → 프로젝트 선택 → Project Settings → API
+   ============================================================ */
+const SUPABASE_URL = "https://yumxdwmwdezgmwqskiux.supabase.co"; // ← "Project URL" 값을 여기에 붙여넣기
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl1bXhkd213ZGV6Z213cXNraXV4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE4ODc4NTksImV4cCI6MjEwNzQ2Mzg1OX0.uu0Zw1r8nRZckrbW_ZDnV8i7FJvEZCoDoa-MRYdBFRY";           // ← "anon public" 키를 여기에 붙여넣기 (service_role 키는 절대 넣지 마세요!)
+/* ============================================================ */
+
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const won = n => Number(n).toLocaleString('ko-KR') + '원';
+let me = null, listings = [], convos = [], ch = null, mode = 'login';
+const nick = () => me?.user_metadata?.nickname || me?.email?.split('@')[0] || '익명';
+
+function toast(m){ const t=$('#toast'); t.textContent=m; t.classList.remove('hidden'); clearTimeout(toast.t); toast.t=setTimeout(()=>t.classList.add('hidden'),3500); }
+function openSheet(h){ $('#sheet').innerHTML=h; $('#modal').classList.remove('hidden'); }
+function closeSheet(){ if(ch){ sb.removeChannel(ch); ch=null; } $('#modal').classList.add('hidden'); }
+$('#modal').onclick = e => { if(e.target.id==='modal') closeSheet(); };
+$('#q').oninput = () => render();
+
+function nav(){
+  $('#nav').innerHTML = me
+    ? `<button onclick="sellForm()" class="btn-p">판매하기</button><button onclick="myChats()" class="btn-s">내 채팅</button><button onclick="sb.auth.signOut()" class="btn-s">로그아웃</button>`
+    : `<button onclick="authForm('login')" class="btn-p">로그인 / 가입</button>`;
+}
+
+/* ---------- 회원가입 · 로그인 (이메일 인증) ---------- */
+function authForm(m){
+  mode = m || mode; const su = mode==='signup';
+  openSheet(`<div class="p-6 space-y-3">
+    <h2 class="disp text-2xl">${su?'회원가입':'로그인'}</h2>
+    ${su?'<input id="nick" class="inp" placeholder="닉네임 (게임 닉네임 추천)">':''}
+    <input id="em" type="email" class="inp" placeholder="이메일">
+    <input id="pw" type="password" class="inp" placeholder="비밀번호 (6자 이상)">
+    <button onclick="doAuth()" class="btn-p w-full !py-3">${su?'인증 메일 받기':'로그인'}</button>
+    <button onclick="authForm('${su?'login':'signup'}')" class="w-full text-sm text-[#1747c9] py-2">${su?'이미 계정이 있어요':'계정이 없어요. 가입하기'}</button>
+  </div>`);
+}
+async function doAuth(){
+  const email=$('#em').value.trim(), password=$('#pw').value;
+  if(!email || password.length<6) return toast('이메일과 6자 이상 비밀번호를 입력해주세요');
+  if(mode==='signup'){
+    const nickname = $('#nick').value.trim() || email.split('@')[0];
+    const {error} = await sb.auth.signUp({ email, password, options:{ data:{nickname}, emailRedirectTo: location.href.split('#')[0] }});
+    if(error) return toast(error.message);
+    openSheet(`<div class="p-8 text-center space-y-3">
+      <h2 class="disp text-2xl">메일함을 확인하세요</h2>
+      <p class="text-sm text-[#1c2530]/70">${esc(email)}로 인증 링크를 보냈어요. 링크를 누르면 가입이 완료돼요.</p>
+      <button onclick="closeSheet()" class="btn-s w-full !py-3">확인</button></div>`);
+  } else {
+    const {error} = await sb.auth.signInWithPassword({ email, password });
+    if(error) return toast(/not confirmed/i.test(error.message) ? '이메일 인증을 먼저 완료해주세요' : '이메일 또는 비밀번호가 틀렸어요');
+    closeSheet();
+  }
+}
+
+/* ---------- 차량 목록 ---------- */
+async function load(){
+  const {data,error} = await sb.from('listings').select('*').order('created_at',{ascending:false});
+  if(error){ toast('불러오기 실패: Supabase URL/Key와 SQL 설정을 확인하세요'); return; }
+  listings = data; render();
+}
+function render(){
+  const q = $('#q').value.trim().toLowerCase();
+  const l = listings.filter(x => x.title.toLowerCase().includes(q));
+  $('#grid').innerHTML = l.length ? l.map(x => `
+    <article class="card ${x.sold?'opacity-70':''}">
+      <div class="aspect-video bg-[#d8d5ce] pt-1.5 relative">${x.sold?'<span class="absolute top-4 left-3 z-[3] disp bg-[#1c2530] text-white px-3 py-1 rounded-lg">판매완료</span>':''}${x.image_url
+        ? `<img src="${esc(x.image_url)}" alt="" class="w-full h-full object-cover" loading="lazy" onerror="this.remove()">`
+        : '<div class="h-full grid place-items-center disp text-5xl text-[#1c2530]/20">P</div>'}</div>
+      <div class="p-4 space-y-2">
+        <h3 class="font-bold truncate">${esc(x.title)}</h3>
+        <p class="disp text-2xl text-[#1747c9]">${won(x.price)}</p>
+        <p class="text-sm text-[#1c2530]/70 line-clamp-2 min-h-[2.5rem]">${esc(x.description)}</p>
+        <p class="text-xs text-[#1c2530]/50">판매자 ${esc(x.seller_name)}</p>
+        ${me && me.id===x.seller_id
+          ? `<div class="flex gap-2"><button onclick="toggleSold('${x.id}',${!x.sold})" class="btn-p flex-1">${x.sold?'판매중으로 되돌리기':'판매완료 표시'}</button><button onclick="del('${x.id}')" class="btn-s">삭제</button></div>`
+          : x.sold ? `<button disabled class="btn-s w-full opacity-60">판매완료된 차량</button>`
+          : `<button onclick="buy('${x.id}')" class="btn-p w-full !py-2.5">구매하기 (판매자와 채팅)</button>`}
+      </div>
+    </article>`).join('')
+    : '<p class="col-span-full text-center text-[#1c2530]/50 py-16">등록된 차량이 없어요. 첫 차량을 등록해보세요.</p>';
+}
+
+/* ---------- 판매 등록 ---------- */
+function sellForm(){
+  openSheet(`<div class="p-6 space-y-3">
+    <h2 class="disp text-2xl">차량 등록</h2>
+    <input id="t" class="inp" placeholder="차량 이름 (예: BMW M5 F90 풀튜닝)">
+    <input id="p" type="number" inputmode="numeric" class="inp" placeholder="가격 (원)">
+    <label class="block text-sm text-[#1c2530]/70">차량 사진 (선택)<input id="img" type="file" accept="image/*" class="inp !py-2 mt-1"></label>
+    <textarea id="d" rows="3" class="inp" placeholder="설명 (마력, 튜닝, 거래 방식 등)"></textarea>
+    <button onclick="doSell()" class="btn-p w-full !py-3">등록하기</button>
+  </div>`);
+}
+async function doSell(){
+  const title=$('#t').value.trim(), price=parseInt($('#p').value,10);
+  if(!title || !(price>0)) return toast('차량 이름과 가격을 입력해주세요');
+  let image_url = null;
+  const f = $('#img').files[0];
+  if(f){
+    toast('사진 올리는 중...');
+    try{
+      const path = `${me.id}/${Date.now()}.jpg`;
+      const up = await sb.storage.from('car-photos').upload(path, await shrink(f), {contentType:'image/jpeg'});
+      if(up.error) throw up.error;
+      image_url = sb.storage.from('car-photos').getPublicUrl(path).data.publicUrl;
+    }catch(e){ return toast('사진 업로드 실패: '+e.message); }
+  }
+  const {error} = await sb.from('listings').insert({ title, price, image_url, description:$('#d').value.trim(), seller_id:me.id, seller_name:nick() });
+  if(error) return toast(error.message);
+  closeSheet(); toast('등록했어요'); load();
+}
+function shrink(file, max=1280){ // 큰 사진을 자동으로 줄여서 업로드
+  return new Promise((ok,no)=>{
+    const img=new Image();
+    img.onload=()=>{ const r=Math.min(1,max/Math.max(img.width,img.height)), c=document.createElement('canvas');
+      c.width=img.width*r; c.height=img.height*r; c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+      c.toBlob(b=>b?ok(b):no(new Error('변환 실패')),'image/jpeg',0.82); };
+    img.onerror=()=>no(new Error('이미지를 읽을 수 없어요'));
+    img.src=URL.createObjectURL(file);
+  });
+}
+async function toggleSold(id,sold){
+  const {error}=await sb.from('listings').update({sold}).eq('id',id);
+  if(error) return toast(error.message);
+  toast(sold?'판매완료로 표시했어요':'다시 판매중으로 바꿨어요'); load();
+}
+async function del(id){
+  if(!confirm('이 차량을 삭제할까요?')) return;
+  const {error} = await sb.from('listings').delete().eq('id',id);
+  if(error) return toast(error.message);
+  toast('삭제했어요'); load();
+}
+
+/* ---------- 구매 버튼 → 판매자와 채팅 연결 ---------- */
+async function buy(id){
+  if(!me) return authForm('login');
+  const l = listings.find(x => x.id===id);
+  if(l.sold) return toast('이미 판매된 차량이에요');
+  let {data:c} = await sb.from('conversations').select('*').eq('listing_id',id).eq('buyer_id',me.id).maybeSingle();
+  if(!c){
+    const r = await sb.from('conversations').insert({ listing_id:id, listing_title:l.title, buyer_id:me.id, seller_id:l.seller_id, buyer_name:nick(), seller_name:l.seller_name }).select().single();
+    if(r.error) return toast(r.error.message);
+    c = r.data;
+  }
+  openChat(c);
+}
+async function myChats(){
+  const {data} = await sb.from('conversations').select('*').order('created_at',{ascending:false});
+  convos = data || [];
+  openSheet(`<div class="p-5">
+    <div class="flex justify-between items-center mb-3"><h2 class="disp text-2xl">내 채팅</h2><button onclick="closeSheet()" class="text-2xl px-2" aria-label="닫기">×</button></div>
+    ${convos.length ? convos.map(c => `<button onclick="openChat(convos.find(x=>x.id==='${c.id}'))" class="w-full text-left p-3 rounded-xl hover:bg-[#f3f1ec] border-b border-[#1c2530]/10">
+      <p class="font-bold truncate">${esc(c.listing_title)}</p>
+      <p class="text-xs text-[#1c2530]/60">${esc(me.id===c.buyer_id ? '판매자 '+c.seller_name : '구매자 '+c.buyer_name)}</p></button>`).join('')
+    : '<p class="text-center text-[#1c2530]/50 py-10">아직 채팅이 없어요</p>'}
+  </div>`);
+}
+async function openChat(c){
+  openSheet(`<div class="flex flex-col h-[85vh] sm:h-[70vh]">
+    <div class="p-4 border-b border-[#1c2530]/10 flex justify-between items-center">
+      <div class="min-w-0"><p class="font-bold truncate">${esc(c.listing_title)}</p>
+      <p class="text-xs text-[#1c2530]/60">${esc(me.id===c.buyer_id ? c.seller_name : c.buyer_name)}님과 대화</p></div>
+      <button onclick="closeSheet()" class="text-2xl px-2" aria-label="닫기">×</button></div>
+    <div id="msgs" class="flex-1 overflow-y-auto p-4 space-y-2 bg-[#f3f1ec]"></div>
+    <div class="p-3 border-t border-[#1c2530]/10 flex gap-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+      <input id="mi" class="inp flex-1" placeholder="메시지 입력" onkeydown="if(event.key==='Enter')send('${c.id}')">
+      <button onclick="send('${c.id}')" class="btn-p">보내기</button></div></div>`);
+  const {data} = await sb.from('messages').select('*').eq('conversation_id',c.id).order('created_at');
+  (data||[]).forEach(bubble);
+  // 실시간 수신
+  ch = sb.channel('m'+c.id).on('postgres_changes',
+    { event:'INSERT', schema:'public', table:'messages', filter:'conversation_id=eq.'+c.id },
+    p => bubble(p.new)).subscribe();
+}
+function bubble(m){
+  const b=$('#msgs'); if(!b || document.getElementById('m'+m.id)) return;
+  const mine = m.sender_id===me.id;
+  b.insertAdjacentHTML('beforeend', `<div id="m${m.id}" class="flex ${mine?'justify-end':''}"><div class="max-w-[80%] px-3.5 py-2 rounded-2xl text-sm break-words ${mine?'bg-[#1747c9] text-white':'bg-white border border-[#1c2530]/10'}">${esc(m.body)}</div></div>`);
+  b.scrollTop = b.scrollHeight;
+}
+async function send(cid){
+  const i=$('#mi'), body=i.value.trim(); if(!body) return; i.value='';
+  const {data,error} = await sb.from('messages').insert({ conversation_id:cid, sender_id:me.id, body }).select().single();
+  if(error) return toast(error.message);
+  bubble(data);
+}
+
+/* ---------- 시작 ---------- */
+sb.auth.onAuthStateChange((evt, s) => { me = s?.user ?? null; nav(); render(); });
+nav(); load();
+</script>
+</body>
+</html>
